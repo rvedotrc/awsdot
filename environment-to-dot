@@ -1,0 +1,223 @@
+#!/usr/bin/env ruby
+
+require 'json'
+
+stacks_dir = "/Users/rachel/git/git.reith.rve.org.uk/collected-data/cloudformation-mirror/accounts/bbc-production/stacks"
+
+IGNORE_RES = {
+  "JustConfigPath" => true,
+}
+
+env = ARGV.first.downcase
+ARGV.shift
+
+stack_names = Dir.open(stacks_dir).entries.select {|n| n.downcase.start_with? env }.sort
+stack_names = stack_names.select {|n| n.downcase.include? "modav" }
+if !ARGV.empty?
+  re = ARGV.join "|"
+  re = "(?:#{re})"
+  stack_names = stack_names.select {|n| n.downcase.match re }
+end
+
+puts "digraph modav_#{env} {"
+
+if !ARGV.empty?
+  puts "  // Only stacks matching: #{ARGV.sort.join " "}"
+end
+
+def node_name(physical_id)
+  physical_id.gsub "-", "_"
+end
+
+def find_refs(data)
+  r = {}
+  q = [data]
+  while !q.empty?
+    d = q.shift
+
+    if d.kind_of? Hash and d.has_key? "Ref"
+      r[ d["Ref"] ] = true
+    end
+    if d.kind_of? Hash and d.has_key? "Fn::GetAtt"
+      r[ d["Fn::GetAtt"][0] ] = true
+    end
+
+    if d.kind_of? Hash
+      q << d.values
+    elsif d.kind_of? Array
+      q.concat d
+    end
+  end
+  r.keys.sort
+end
+
+def value_to_phys(v)
+  return nil if v.nil?
+  if v.match /https:..sqs/
+    return File.basename v
+  end
+  if v.match /^arn:aws:/
+    return (v.split ":")[5]
+  end
+  v
+end
+
+def write_resource(resource)
+  phys = resource["PhysicalResourceId"]
+  if resource["ResourceType"] == "AWS::SQS::Queue"
+    phys = File.basename phys # URL -> name
+  end
+
+  label = phys.gsub /[-_]/, "\\n"
+  puts "  #{node_name phys} [ label=\"#{label}\" ]"
+end
+
+def ignore_resource(phys)
+  phys.match /(BadMessage|DeadLetter|Fail)Queue-/
+end
+
+stack_names.each do |stack_name|
+  resources = JSON.parse(IO.read "#{stacks_dir}/#{stack_name}/resources.json")["StackResourceSummaries"]
+
+  template = nil
+  get_template = Proc.new {
+    template ||= JSON.parse(IO.read "#{stacks_dir}/#{stack_name}/template.json")
+  }
+
+  description = nil
+  get_description = Proc.new {
+    description ||= JSON.parse(IO.read "#{stacks_dir}/#{stack_name}/description.json")
+  }
+
+  resources.each do |res|
+    phys = res["PhysicalResourceId"]
+
+    next if ignore_resource phys
+
+    # Queues
+    if res["ResourceType"] == "AWS::SQS::Queue"
+      write_resource res
+    end
+
+    # Buckets
+    if res["ResourceType"] == "AWS::S3::Bucket"
+      write_resource res
+    end
+
+    # Users and Roles
+    if res["ResourceType"] == "AWS::IAM::User"
+      write_resource res
+    end
+    if res["ResourceType"] == "AWS::IAM::Role"
+      write_resource res
+    end
+
+    # Alarms (that watch queues?)
+
+    # Topics?  (We don't model subscriptions in stacks, but we could find out
+    # from aws-query)
+
+    if res["ResourceType"] == "AWS::IAM::Policy"
+      write_resource res
+
+      # What users and policies is this role attached to?
+      t = get_template.call
+      resource = t["Resources"][res["LogicalResourceId"]]
+
+      ref_to_physical_id = {}
+      resources.each do |r|
+        ref_to_physical_id[ r["LogicalResourceId"] ] = value_to_phys r["PhysicalResourceId"]
+      end
+      (t["Parameters"] || {}).each do |k,v|
+        actual_value = get_description.call()["Stacks"][0]["Parameters"].find {|p| p["ParameterKey"] == k }["ParameterValue"]
+        ref_to_physical_id[k] = value_to_phys actual_value
+      end
+
+      do_mappings = Proc.new do |property_key, label|
+        applies_to_list = resource["Properties"][property_key]
+        if applies_to_list
+          applies_to_list.each do |applies_to|
+            if applies_to.kind_of? Hash and applies_to.has_key? "Ref"
+              ref = applies_to["Ref"]
+              if t["Resources"][ref]
+                applies_to_resource = resources.find {|r| r["LogicalResourceId"] == ref }
+                puts "  #{node_name phys} -> #{node_name applies_to_resource["PhysicalResourceId"]} // policy applies to #{label}"
+              else
+                $stderr.puts "Didn't find referenced #{label} #{applies_to}"
+              end
+            end
+          end
+        end
+      end
+
+      do_mappings.call "Users", "user"
+      do_mappings.call "Roles", "role"
+
+      read_access_allowed = {}
+      write_access_allowed = {}
+
+      statements = resource["Properties"]["PolicyDocument"]["Statement"]
+      statements.each do |statement|
+        raise "Can only handle 'Allow'" unless statement["Effect"] == "Allow"
+
+        # From "Action" work out whether we'd like to classify this as read,
+        # write, or both
+        access = :read
+        actions = statement["Action"] || []
+        actions = [actions] unless actions.kind_of? Array
+        if actions.find {|a| /Send|Publish|Put|Delete/ === a}
+          access = :write
+        end
+
+        allowed_resources = statement["Resource"]
+        allowed_resources = [ allowed_resources ] unless allowed_resources.kind_of? Array
+        allowed_resources.each do |allowed_resource|
+          referenced_things = find_refs allowed_resource
+          referenced_things.each do |thing|
+            if access == :read or access == :readwrite
+              read_access_allowed[thing] = true
+            end
+            if access == :write or access == :readwrite
+              write_access_allowed[thing] = true
+            end
+          end
+        end
+      end
+
+      # Refs, which we then have to turn into physical IDs
+      # and ignore the ones that aren't resources (e.g. JustConfigPath,
+      # EnvironmentLowerCase)
+      add_access = Proc.new do |access, swap|
+        access.keys.sort.each do |ref_res|
+          next if IGNORE_RES[ref_res]
+          ref_phys = ref_to_physical_id[ref_res]
+          raise "Can't resolve #{ref_res}" if not ref_phys
+
+          next if ignore_resource ref_phys
+
+          # Not sure where the best place for this hack is...
+          # turn arn into physical resource id
+          ref_phys.gsub! "domain/", ""
+
+          if swap
+            puts "  #{node_name ref_phys} -> #{node_name phys} [ label=w ] // has write access"
+          else
+            puts "  #{node_name phys} -> #{node_name ref_phys} [ label=r ] // has read access"
+          end
+        end
+      end
+
+      add_access.call read_access_allowed, false
+      add_access.call write_access_allowed, true
+
+    end
+
+  end
+
+
+
+  # Components (ASGs?)
+  # which then means reading the various policies
+end
+
+puts "}"
