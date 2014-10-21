@@ -4,9 +4,13 @@ require 'json'
 
 stacks_dir = "/Users/rachel/git/git.reith.rve.org.uk/collected-data/cloudformation-mirror/accounts/bbc-production/stacks"
 
-IGNORE_RES = {
-  "JustConfigPath" => true,
-}
+IGNORE_RES = %w[
+  JustConfigPath
+  Environment
+  EnvironmentLowerCase
+]
+IGNORE_RES << /^prod.s3.common.*/
+$stderr.puts IGNORE_RES.inspect
 
 env = ARGV.first.downcase
 ARGV.shift
@@ -67,6 +71,9 @@ def write_resource(resource)
   if resource["ResourceType"] == "AWS::SQS::Queue"
     phys = File.basename phys # URL -> name
   end
+  if resource["ResourceType"] == "AWS::SNS::Topic"
+    phys = phys.split(":").last
+  end
 
   label = phys.gsub /[-_]/, "\\n"
   puts "  #{node_name phys} [ label=\"#{label}\" ]"
@@ -77,6 +84,7 @@ def ignore_resource(phys)
 end
 
 stack_names.each do |stack_name|
+  puts "  // Reading stack #{stack_name}"
   resources = JSON.parse(IO.read "#{stacks_dir}/#{stack_name}/resources.json")["StackResourceSummaries"]
 
   template = nil
@@ -91,6 +99,8 @@ stack_names.each do |stack_name|
 
   resources.each do |res|
     phys = res["PhysicalResourceId"]
+
+    puts "  // Reading resource #{stack_name}/#{res["LogicalResourceId"]}"
 
     next if ignore_resource phys
 
@@ -116,13 +126,24 @@ stack_names.each do |stack_name|
 
     # Topics?  (We don't model subscriptions in stacks, but we could find out
     # from aws-query)
+    if res["ResourceType"] == "AWS::SNS::Topic"
+      write_resource res
+    end
 
     if res["ResourceType"] == "AWS::IAM::Policy"
       write_resource res
 
-      # What users and policies is this role attached to?
       t = get_template.call
       resource = t["Resources"][res["LogicalResourceId"]]
+
+      # What roles does this policy apply to?
+      resource["Properties"]["Roles"].each do |role|
+        role = role["Ref"]
+        role_res = resources.find {|r| r["LogicalResourceId"] == role }["PhysicalResourceId"]
+        puts "  #{node_name phys} -> #{node_name role_res} [weight=0] // policy applies to role"
+      end
+
+      # What users and policies is this policy attached to?
 
       ref_to_physical_id = {}
       resources.each do |r|
@@ -141,7 +162,7 @@ stack_names.each do |stack_name|
               ref = applies_to["Ref"]
               if t["Resources"][ref]
                 applies_to_resource = resources.find {|r| r["LogicalResourceId"] == ref }
-                puts "  #{node_name phys} -> #{node_name applies_to_resource["PhysicalResourceId"]} // policy applies to #{label}"
+                # puts "  #{node_name phys} -> #{node_name applies_to_resource["PhysicalResourceId"]} // policy applies to #{label}"
               else
                 $stderr.puts "Didn't find referenced #{label} #{applies_to}"
               end
@@ -165,7 +186,7 @@ stack_names.each do |stack_name|
         access = :read
         actions = statement["Action"] || []
         actions = [actions] unless actions.kind_of? Array
-        if actions.find {|a| /Send|Publish|Put|Delete/ === a}
+        if actions.find {|a| /^(?:sqs:SendMessage|sns:Publish|s3:PutObject)$/ === a}
           access = :write
         end
 
@@ -187,28 +208,32 @@ stack_names.each do |stack_name|
       # Refs, which we then have to turn into physical IDs
       # and ignore the ones that aren't resources (e.g. JustConfigPath,
       # EnvironmentLowerCase)
-      add_access = Proc.new do |access, swap|
-        access.keys.sort.each do |ref_res|
-          next if IGNORE_RES[ref_res]
+      add_access = Proc.new do |access_list, access_type|
+        access_list.keys.sort.each do |ref_res|
+          next if IGNORE_RES.any? {|e| e === ref_res }
+
           ref_phys = ref_to_physical_id[ref_res]
           raise "Can't resolve #{ref_res}" if not ref_phys
 
           next if ignore_resource ref_phys
+          $stderr.puts ref_phys.inspect
+          next if ref_phys.match /^prod-s3-.*/
+          next if IGNORE_RES.any? {|e| e === ref_phys }
 
           # Not sure where the best place for this hack is...
           # turn arn into physical resource id
           ref_phys.gsub! "domain/", ""
 
-          if swap
-            puts "  #{node_name ref_phys} -> #{node_name phys} [ label=w ] // has write access"
+          if access_type == :read
+            puts "  #{node_name ref_phys} -> #{node_name phys} [ label=r ] // has read access"
           else
-            puts "  #{node_name phys} -> #{node_name ref_phys} [ label=r ] // has read access"
+            puts "  #{node_name phys} -> #{node_name ref_phys} [ label=w ] // has write access"
           end
         end
       end
 
-      add_access.call read_access_allowed, false
-      add_access.call write_access_allowed, true
+      add_access.call read_access_allowed, :read
+      add_access.call write_access_allowed, :write
 
     end
 
