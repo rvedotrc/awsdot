@@ -2,7 +2,7 @@
 
 require 'json'
 
-stacks_dir = "/Users/rachel/git/git.reith.rve.org.uk/collected-data/cloudformation-mirror/accounts/bbc-production/stacks"
+stacks_dir = "/Users/rachel/git/git.reith.rve.org.uk/cloudformation-mirror/accounts/bbc-production/stacks"
 
 IGNORE_RES = %w[
   JustConfigPath
