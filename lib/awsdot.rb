@@ -10,26 +10,20 @@ require 'json'
 
 require_relative 'awsdot/stack_collection.rb'
 require_relative 'awsdot/stack.rb'
+require_relative 'awsdot/stack_actor_collection.rb'
 require_relative 'awsdot/actor.rb'
 require_relative 'awsdot/sns_query.rb'
 require_relative 'awsdot/graph.rb'
 
 def process_stack(stack)
-  #users = stack.resources.select {|r| r["ResourceType"] == "AWS::IAM::User"}
-  #roles = stack.resources.select {|r| r["ResourceType"] == "AWS::IAM::Role"}
-  #puts "%4d  %4d  %s" % [ users.count, roles.count, stack.name ]
-  stack.resources.entries.sort_by(&:first).each do |r|
-    if r["ResourceType"].match /^AWS::IAM::(User|Role)$/
-      actor = AwsDot::Actor.new(stack, r)
+  stack.actors.each do |actor|
+    @graph.add_node actor.node_id, {
+      label: "#{stack.name}\n#{actor.logical_resource_id}",
+      shape: "ellipse",
+      color: "blue",
+    }
 
-      @graph.add_node actor.node_id, {
-        label: "#{stack.name}\n#{actor.logical_resource_id}",
-        shape: "ellipse",
-        color: "blue",
-      }
-
-      process_actor actor
-    end
+    process_actor actor
   end
 end
 

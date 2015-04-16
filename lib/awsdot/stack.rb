@@ -47,6 +47,10 @@ module AwsDot
       nil
     end
 
+    def actors
+      AwsDot::StackActorCollection.new(self)
+    end
+
     private
 
     def load_file(file)
