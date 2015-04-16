@@ -45,6 +45,7 @@ def process_policy_statement_resource(actor, stmt, res)
   res = resolve_resource(actor.stack, res)
   puts "// #{actor.stack.name} #{actor.logical_resource_id} has some sort of access to #{res.inspect}"
 
+  # FIXME BBC-specific
   if res.kind_of? String and res.match /^arn:aws:sqs:/ and !res.match /((DeadLetter|BadMessage|Fail)Queue|Dlq|Badmsg|BadMsg|Failed)/
     queue_name = res.split(/:/).last
     res_node_name = res.gsub /\W/, "_"
@@ -130,7 +131,10 @@ end
 
 AwsDot::StackCollection.new.each do |stack|
   puts "// Processing #{stack.name}"
+
+  # FIXME BBC-specific
   if stack.guess_env == "live"
+    # FIXME BBC-specific
     if stack.name.match /modav|mami|sky|housekeep/i
       process_stack stack
     end
@@ -139,6 +143,8 @@ end
 
 AwsDot::SNSQuery.subscriptions.each do |sub|
   next unless sub["Protocol"] == "sqs"
+
+  # FIXME BBC-specific
   next unless sub["TopicArn"].match /:(Sky)?live/i
   next unless sub["TopicArn"].match /modav|mami|sky|housekeep/i
   next if sub["Endpoint"].match /(Turncoat|Rorschach)Resources-Queue/

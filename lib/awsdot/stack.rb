@@ -40,6 +40,7 @@ module AwsDot
     end
 
     def guess_env
+      # FIXME BBC-specific
       m = name.match /^(?<env>int|test|live)-/
       m ||= name.match /^(?<env>Int|Test|Live)[A-Z]/
       m ||= name.match /^Sky(?<env>Test|Live)/
