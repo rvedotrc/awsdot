@@ -7,7 +7,7 @@ module AwsDot
     # STACKS_DIR should contain one subdir for each stack you want to analyze,
     # where each subdir contains resources.json, template.json and
     # description.json (as produced by the 'aws' command line tool).
-    STACKS_DIR = "/Users/rachel/git/git.reith.rve.org.uk/cloudformation-mirror/accounts/bbc-production/stacks"
+    STACKS_DIR = "./stacks"
 
     def each
       Dir.entries(STACKS_DIR).each do |n|
