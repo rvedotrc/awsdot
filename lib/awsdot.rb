@@ -180,10 +180,9 @@ def process_stack(stack)
   end
 end
 
-def process_actor(stack, actor_type, actor_logical_id, node_name)
-  # Load the template of the same stack and look for AWS::IAM::Policy
-  # which are applied to this role or user.
+def policy_statements_for_actor(stack, actor_type, actor_logical_id)
   statements = []
+
   policies = stack.template["Resources"].entries.sort_by(&:first).each do |k, v|
     if v["Type"] == "AWS::IAM::Policy"
       if policy_applies_to(v["Properties"], actor_type, actor_logical_id)
@@ -191,6 +190,14 @@ def process_actor(stack, actor_type, actor_logical_id, node_name)
       end
     end
   end
+
+  statements
+end
+
+def process_actor(stack, actor_type, actor_logical_id, node_name)
+  # Load the template of the same stack and look for AWS::IAM::Policy
+  # which are applied to this role or user.
+  statements = policy_statements_for_actor(stack, actor_type, actor_logical_id)
 
   # puts "Statements that apply to #{actor_logical_id}"
   # puts JSON.pretty_generate(statements)
@@ -259,6 +266,8 @@ def process_actor(stack, actor_type, actor_logical_id, node_name)
   # Care about: queues (but not error queues), topics, buckets,
   # simpledb, dynamodb.
 end
+
+################################################################################
 
 @graph = AwsDot::Graph.new
 
