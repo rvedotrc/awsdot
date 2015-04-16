@@ -161,104 +161,112 @@ def policy_applies_to(policy_properties, actor_resource_type, actor_name)
   false
 end
 
+def process_stack(stack)
+  #users = stack.resources.select {|r| r["ResourceType"] == "AWS::IAM::User"}
+  #roles = stack.resources.select {|r| r["ResourceType"] == "AWS::IAM::Role"}
+  #puts "%4d  %4d  %s" % [ users.count, roles.count, stack.name ]
+  stack.resources.entries.sort_by(&:first).each do |r|
+    if r["ResourceType"].match /^AWS::IAM::(User|Role)$/
+      node_name = r["PhysicalResourceId"].gsub "-", "_"
+
+      @graph.add_node node_name, {
+        label: "#{stack.name}\n#{r["LogicalResourceId"]}",
+        shape: "ellipse",
+        color: "blue",
+      }
+
+      process_actor stack, r["ResourceType"], r["LogicalResourceId"], node_name
+    end
+  end
+end
+
+def process_actor(stack, actor_type, actor_logical_id, node_name)
+  # Load the template of the same stack and look for AWS::IAM::Policy
+  # which are applied to this role or user.
+  statements = []
+  policies = stack.template["Resources"].entries.sort_by(&:first).each do |k, v|
+    if v["Type"] == "AWS::IAM::Policy"
+      if policy_applies_to(v["Properties"], actor_type, actor_logical_id)
+        statements.concat v["Properties"]["PolicyDocument"]["Statement"]
+      end
+    end
+  end
+
+  # puts "Statements that apply to #{actor_logical_id}"
+  # puts JSON.pretty_generate(statements)
+
+  # Find out what resources these roles grant access to.
+  # Initially don't care about direction; see what weight=0 looks
+  # like.
+
+  statements.select {|stmt| stmt["Effect"] == "Allow"}.each do |stmt|
+    resources = stmt["Resource"] || []
+    resources = [ resources ] unless resources.kind_of? Array
+    resources.each do |res|
+      # puts "#{stack.name} #{actor_logical_id} has some sort of access to #{res.inspect}"
+
+      if res.kind_of? Hash and res.has_key? "Ref"
+        ref = res["Ref"]
+        if((stack.template["Parameters"] || {})[ref])
+          res = stack.get_parameter_value(ref)
+        elsif stack.template["Resources"][ref]
+          res = stack.get_physical_id(ref)
+        end
+      end
+
+      puts "// #{stack.name} #{actor_logical_id} has some sort of access to #{res.inspect}"
+
+      if res.kind_of? String and res.match /^arn:aws:sqs:/ and !res.match /((DeadLetter|BadMessage|Fail)Queue|BadMsg|Failed)/
+        queue_name = res.split(/:/).last
+        res_node_name = res.gsub /\W/, "_"
+
+        @graph.add_node res_node_name, {
+          label: queue_name.sub(/-[A-Z0-9]{6,20}$/, "").gsub("-", "\n"),
+          shape: "rect",
+        }
+
+        if stmt["Action"].include? "sqs:SendMessage" and stmt["Action"].include? "sqs:DeleteMessage"
+          @graph.add_edge node_name, res_node_name, {
+            dir: "both",
+          }
+        elsif stmt["Action"].include? "sqs:SendMessage"
+          @graph.add_edge node_name, res_node_name, {
+          }
+        elsif stmt["Action"].include? "sqs:DeleteMessage"
+          @graph.add_edge res_node_name, node_name, {
+          }
+        end
+      end
+
+      if res.kind_of? String and res.match /^arn:aws:sns:/
+        topic_name = res.split(/:/).last
+        res_node_name = res.gsub /\W/, "_"
+
+        @graph.add_node res_node_name, {
+          label: topic_name.sub(/-[A-Z0-9]{6,20}$/, "").gsub("-", "\n"),
+          shape: "rect",
+          fontcolor: "red",
+        }
+
+        if stmt["Action"].include? "sns:Publish"
+          @graph.add_edge node_name, res_node_name, {
+          }
+        end
+      end
+    end
+  end
+
+  # Care about: queues (but not error queues), topics, buckets,
+  # simpledb, dynamodb.
+end
+
 @graph = AwsDot::Graph.new
 
 AwsDot::StackCollection.new.each do |stack|
   puts "// Processing #{stack.name}"
   if stack.guess_env == "live"
     if stack.name.match /modav|mami|sky|housekeep/i
-      #users = stack.resources.select {|r| r["ResourceType"] == "AWS::IAM::User"}
-      #roles = stack.resources.select {|r| r["ResourceType"] == "AWS::IAM::Role"}
-      #puts "%4d  %4d  %s" % [ users.count, roles.count, stack.name ]
-      stack.resources.entries.sort_by(&:first).each do |r|
-        if r["ResourceType"].match /^AWS::IAM::(User|Role)$/
-          node_name = r["PhysicalResourceId"].gsub "-", "_"
-
-          @graph.add_node node_name, {
-            label: "#{stack.name}\n#{r["LogicalResourceId"]}",
-            shape: "ellipse",
-            color: "blue",
-          }
-
-          # Load the template of the same stack and look for AWS::IAM::Policy
-          # which are applied to this role or user.
-          statements = []
-          policies = stack.template["Resources"].entries.sort_by(&:first).each do |k, v|
-            if v["Type"] == "AWS::IAM::Policy"
-              if policy_applies_to(v["Properties"], r["ResourceType"], r["LogicalResourceId"])
-                statements.concat v["Properties"]["PolicyDocument"]["Statement"]
-              end
-            end
-          end
-
-          # puts "Statements that apply to #{r["LogicalResourceId"]}"
-          # puts JSON.pretty_generate(statements)
-
-          # Find out what resources these roles grant access to.
-          # Initially don't care about direction; see what weight=0 looks
-          # like.
-
-          statements.select {|stmt| stmt["Effect"] == "Allow"}.each do |stmt|
-            resources = stmt["Resource"] || []
-            resources = [ resources ] unless resources.kind_of? Array
-            resources.each do |res|
-              # puts "#{stack.name} #{r["LogicalResourceId"]} has some sort of access to #{res.inspect}"
-
-              if res.kind_of? Hash and res.has_key? "Ref"
-                ref = res["Ref"]
-                if((stack.template["Parameters"] || {})[ref])
-                  res = stack.get_parameter_value(ref)
-                elsif stack.template["Resources"][ref]
-                  res = stack.get_physical_id(ref)
-                end
-              end
-
-              puts "// #{stack.name} #{r["LogicalResourceId"]} has some sort of access to #{res.inspect}"
-
-              if res.kind_of? String and res.match /^arn:aws:sqs:/ and !res.match /((DeadLetter|BadMessage|Fail)Queue|BadMsg|Failed)/
-                queue_name = res.split(/:/).last
-                res_node_name = res.gsub /\W/, "_"
-
-                @graph.add_node res_node_name, {
-                  label: queue_name.sub(/-[A-Z0-9]{6,20}$/, "").gsub("-", "\n"),
-                  shape: "rect",
-                }
-
-                if stmt["Action"].include? "sqs:SendMessage" and stmt["Action"].include? "sqs:DeleteMessage"
-                  @graph.add_edge node_name, res_node_name, {
-                    dir: "both",
-                  }
-                elsif stmt["Action"].include? "sqs:SendMessage"
-                  @graph.add_edge node_name, res_node_name, {
-                  }
-                elsif stmt["Action"].include? "sqs:DeleteMessage"
-                  @graph.add_edge res_node_name, node_name, {
-                  }
-                end
-              end
-
-              if res.kind_of? String and res.match /^arn:aws:sns:/
-                topic_name = res.split(/:/).last
-                res_node_name = res.gsub /\W/, "_"
-
-                @graph.add_node res_node_name, {
-                  label: topic_name.sub(/-[A-Z0-9]{6,20}$/, "").gsub("-", "\n"),
-                  shape: "rect",
-                  fontcolor: "red",
-                }
-
-                if stmt["Action"].include? "sns:Publish"
-                  @graph.add_edge node_name, res_node_name, {
-                  }
-                end
-              end
-            end
-          end
-
-          # Care about: queues (but not error queues), topics, buckets,
-          # simpledb, dynamodb.
-        end
-      end
+      process_stack stack
     end
   end
 end
