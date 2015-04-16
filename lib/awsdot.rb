@@ -42,7 +42,6 @@ end
 def process_policy_statement_resource(actor, stmt, res)
   node_name = actor.node_id
 
-  # puts "#{actor.stack.name} #{actor.logical_resource_id} has some sort of access to #{res.inspect}"
   res = resolve_resource(actor.stack, res)
   puts "// #{actor.stack.name} #{actor.logical_resource_id} has some sort of access to #{res.inspect}"
 
@@ -114,16 +113,7 @@ def process_policy_statement_resource(actor, stmt, res)
 end
 
 def process_actor(actor)
-  # Load the template of the same stack and look for AWS::IAM::Policy
-  # which are applied to this role or user.
   statements = actor.policy_statements
-
-  # puts "Statements that apply to #{actor.logical_resource_id}"
-  # puts JSON.pretty_generate(statements)
-
-  # For now we consider one statement at a time.
-
-  # Find out what resources these roles grant access to.
 
   statements.select {|stmt| stmt["Effect"] == "Allow"}.each do |stmt|
     resources = stmt["Resource"] || []
@@ -132,9 +122,6 @@ def process_actor(actor)
       process_policy_statement_resource actor, stmt, res
     end
   end
-
-  # Care about: queues (but not error queues), topics, buckets,
-  # simpledb, dynamodb.
 end
 
 ################################################################################
