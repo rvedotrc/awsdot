@@ -95,36 +95,58 @@ module AwsDot
 
   end
 
-end
+  class Graph
 
-def dot_string(s)
-  s.inspect
-end
-
-def render_digraph(nodes, edges)
-  puts "digraph aws {"
-
-  nodes.entries.sort_by(&:first).each do |k,v|
-    print "  %s" % k
-    unless v.empty?
-      print " [ #{v.entries.sort_by(&:first).map do |vk, vv|
-        %Q[#{vk}=#{dot_string(vv)}]
-      end.join ", "} ]"
+    def initialize
+      @nodes = {}
+      @edges = {}
     end
-    print "\n"
+
+    def add_node(id, opts)
+      @nodes[id] = opts
+    end
+
+    def add_edge(from_id, to_id, opts)
+      @edges[ [from_id, to_id] ] = opts
+    end
+
+    def render
+      nodes = @nodes
+      edges = @edges
+
+      puts "digraph aws {"
+
+      nodes.entries.sort_by(&:first).each do |k,v|
+        print "  %s" % k
+        unless v.empty?
+          print " [ #{v.entries.sort_by(&:first).map do |vk, vv|
+            %Q[#{vk}=#{dot_string(vv)}]
+          end.join ", "} ]"
+        end
+        print "\n"
+      end
+
+      edges.entries.sort_by(&:first).each do |k,v|
+        print "  %s -> %s" % k
+        unless v.empty?
+          print " [ #{v.entries.sort_by(&:first).map do |vk, vv|
+            %Q[#{vk}=#{dot_string(vv)}]
+          end.join ", "} ]"
+        end
+        print "\n"
+      end
+
+      puts "}"
+    end
+
+    private
+
+    def dot_string(s)
+      s.inspect
+    end
+
   end
 
-  edges.entries.sort_by(&:first).each do |k,v|
-    print "  %s -> %s" % k
-    unless v.empty?
-      print " [ #{v.entries.sort_by(&:first).map do |vk, vv|
-        %Q[#{vk}=#{dot_string(vv)}]
-      end.join ", "} ]"
-    end
-    print "\n"
-  end
-
-  puts "}"
 end
 
 def policy_applies_to(policy_properties, actor_resource_type, actor_name)
@@ -139,8 +161,7 @@ def policy_applies_to(policy_properties, actor_resource_type, actor_name)
   false
 end
 
-nodes = {}
-edges = {}
+@graph = AwsDot::Graph.new
 
 AwsDot::StackCollection.new.each do |stack|
   puts "// Processing #{stack.name}"
@@ -152,7 +173,8 @@ AwsDot::StackCollection.new.each do |stack|
       stack.resources.entries.sort_by(&:first).each do |r|
         if r["ResourceType"].match /^AWS::IAM::(User|Role)$/
           node_name = r["PhysicalResourceId"].gsub "-", "_"
-          nodes[node_name] = {
+
+          @graph.add_node node_name, {
             label: "#{stack.name}\n#{r["LogicalResourceId"]}",
             shape: "ellipse",
             color: "blue",
@@ -197,20 +219,20 @@ AwsDot::StackCollection.new.each do |stack|
                 queue_name = res.split(/:/).last
                 res_node_name = res.gsub /\W/, "_"
 
-                nodes[res_node_name] = {
+                @graph.add_node res_node_name, {
                   label: queue_name.sub(/-[A-Z0-9]{6,20}$/, "").gsub("-", "\n"),
                   shape: "rect",
                 }
 
                 if stmt["Action"].include? "sqs:SendMessage" and stmt["Action"].include? "sqs:DeleteMessage"
-                  edges[[node_name, res_node_name]] = {
+                  @graph.add_edge node_name, res_node_name, {
                     dir: "both",
                   }
                 elsif stmt["Action"].include? "sqs:SendMessage"
-                  edges[[node_name, res_node_name]] = {
+                  @graph.add_edge node_name, res_node_name, {
                   }
                 elsif stmt["Action"].include? "sqs:DeleteMessage"
-                  edges[[res_node_name, node_name]] = {
+                  @graph.add_edge res_node_name, node_name, {
                   }
                 end
               end
@@ -219,14 +241,14 @@ AwsDot::StackCollection.new.each do |stack|
                 topic_name = res.split(/:/).last
                 res_node_name = res.gsub /\W/, "_"
 
-                nodes[res_node_name] = {
+                @graph.add_node res_node_name, {
                   label: topic_name.sub(/-[A-Z0-9]{6,20}$/, "").gsub("-", "\n"),
                   shape: "rect",
                   fontcolor: "red",
                 }
 
                 if stmt["Action"].include? "sns:Publish"
-                  edges[[node_name, res_node_name]] = {
+                  @graph.add_edge node_name, res_node_name, {
                   }
                 end
               end
@@ -256,8 +278,8 @@ AwsDot::SNSQuery.subscriptions.each do |sub|
   queue_name = sub["Endpoint"].split(/:/).last
   queue_node_name = sub["Endpoint"].gsub /\W/, "_"
 
-  edges[[topic_node_name, queue_node_name]] = {
+  @graph.add_edge topic_node_name, queue_node_name, {
   }
 end
 
-render_digraph nodes, edges
+@graph.render
