@@ -194,6 +194,76 @@ def policy_statements_for_actor(stack, actor_type, actor_logical_id)
   statements
 end
 
+def resolve_resource(stack, res)
+  if res.kind_of? Hash and res.has_key? "Ref"
+    ref = res["Ref"]
+    if((stack.template["Parameters"] || {})[ref])
+      res = stack.get_parameter_value(ref)
+    elsif stack.template["Resources"][ref]
+      res = stack.get_physical_id(ref)
+    end
+  end
+  res
+end
+
+def process_policy_statement_resource(stack, actor_type, actor_logical_id, node_name, stmt, res)
+  # puts "#{stack.name} #{actor_logical_id} has some sort of access to #{res.inspect}"
+  res = resolve_resource(stack, res)
+  puts "// #{stack.name} #{actor_logical_id} has some sort of access to #{res.inspect}"
+
+  if res.kind_of? String and res.match /^arn:aws:sqs:/ and !res.match /((DeadLetter|BadMessage|Fail)Queue|Dlq|Badmsg|BadMsg|Failed)/
+    queue_name = res.split(/:/).last
+    res_node_name = res.gsub /\W/, "_"
+
+    @graph.add_node res_node_name, {
+      label: queue_name.sub(/-[A-Z0-9]{6,20}$/, "").gsub("-", "\n"),
+      shape: "rect",
+    }
+
+    if stmt["Action"].include? "sqs:SendMessage" and stmt["Action"].include? "sqs:DeleteMessage"
+      @graph.add_edge node_name, res_node_name, {
+        dir: "both",
+      }
+    elsif stmt["Action"].include? "sqs:SendMessage"
+      @graph.add_edge node_name, res_node_name, {
+      }
+    elsif stmt["Action"].include? "sqs:DeleteMessage"
+      @graph.add_edge res_node_name, node_name, {
+      }
+    end
+  end
+
+  if res.kind_of? String and res.match /^arn:aws:sns:/
+    topic_name = res.split(/:/).last
+    res_node_name = res.gsub /\W/, "_"
+
+    @graph.add_node res_node_name, {
+      label: topic_name.sub(/-[A-Z0-9]{6,20}$/, "").gsub("-", "\n"),
+      shape: "rect",
+      fontcolor: "red",
+    }
+
+    if stmt["Action"].include? "sns:Publish"
+      @graph.add_edge node_name, res_node_name, {
+      }
+    end
+  end
+
+  if res.kind_of? String and res.match /^arn:aws:sdb:/
+    domain_name = res.split('/').last
+    res_node_name = res.gsub /\W/, "_"
+
+    @graph.add_node res_node_name, {
+      label: domain_name.sub(/-[A-Z0-9]{6,20}$/, "").gsub("-", "\n"),
+      shape: "rect",
+      fontcolor: "purple",
+    }
+
+    @graph.add_edge node_name, res_node_name, {
+    }
+  end
+end
+
 def process_actor(stack, actor_type, actor_logical_id, node_name)
   # Load the template of the same stack and look for AWS::IAM::Policy
   # which are applied to this role or user.
@@ -202,64 +272,15 @@ def process_actor(stack, actor_type, actor_logical_id, node_name)
   # puts "Statements that apply to #{actor_logical_id}"
   # puts JSON.pretty_generate(statements)
 
+  # For now we consider one statement at a time.
+
   # Find out what resources these roles grant access to.
-  # Initially don't care about direction; see what weight=0 looks
-  # like.
 
   statements.select {|stmt| stmt["Effect"] == "Allow"}.each do |stmt|
     resources = stmt["Resource"] || []
     resources = [ resources ] unless resources.kind_of? Array
     resources.each do |res|
-      # puts "#{stack.name} #{actor_logical_id} has some sort of access to #{res.inspect}"
-
-      if res.kind_of? Hash and res.has_key? "Ref"
-        ref = res["Ref"]
-        if((stack.template["Parameters"] || {})[ref])
-          res = stack.get_parameter_value(ref)
-        elsif stack.template["Resources"][ref]
-          res = stack.get_physical_id(ref)
-        end
-      end
-
-      puts "// #{stack.name} #{actor_logical_id} has some sort of access to #{res.inspect}"
-
-      if res.kind_of? String and res.match /^arn:aws:sqs:/ and !res.match /((DeadLetter|BadMessage|Fail)Queue|BadMsg|Failed)/
-        queue_name = res.split(/:/).last
-        res_node_name = res.gsub /\W/, "_"
-
-        @graph.add_node res_node_name, {
-          label: queue_name.sub(/-[A-Z0-9]{6,20}$/, "").gsub("-", "\n"),
-          shape: "rect",
-        }
-
-        if stmt["Action"].include? "sqs:SendMessage" and stmt["Action"].include? "sqs:DeleteMessage"
-          @graph.add_edge node_name, res_node_name, {
-            dir: "both",
-          }
-        elsif stmt["Action"].include? "sqs:SendMessage"
-          @graph.add_edge node_name, res_node_name, {
-          }
-        elsif stmt["Action"].include? "sqs:DeleteMessage"
-          @graph.add_edge res_node_name, node_name, {
-          }
-        end
-      end
-
-      if res.kind_of? String and res.match /^arn:aws:sns:/
-        topic_name = res.split(/:/).last
-        res_node_name = res.gsub /\W/, "_"
-
-        @graph.add_node res_node_name, {
-          label: topic_name.sub(/-[A-Z0-9]{6,20}$/, "").gsub("-", "\n"),
-          shape: "rect",
-          fontcolor: "red",
-        }
-
-        if stmt["Action"].include? "sns:Publish"
-          @graph.add_edge node_name, res_node_name, {
-          }
-        end
-      end
+      process_policy_statement_resource stack, actor_type, actor_logical_id, node_name, stmt, res
     end
   end
 
