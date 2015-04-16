@@ -84,6 +84,57 @@ module AwsDot
 
   end
 
+  class Actor
+
+    attr_reader :stack
+
+    def initialize(stack, resource)
+      @stack = stack
+      @resource = resource
+    end
+
+    def node_id
+      @resource["PhysicalResourceId"].gsub "-", "_"
+    end
+
+    def logical_resource_id
+      @resource["LogicalResourceId"]
+    end
+
+    def resource_type
+      @resource["ResourceType"]
+    end
+
+    def policy_statements
+      statements = []
+
+      policies = stack.template["Resources"].entries.sort_by(&:first).each do |k, v|
+        if v["Type"] == "AWS::IAM::Policy"
+          if policy_applies_to_me(v["Properties"])
+            statements.concat v["Properties"]["PolicyDocument"]["Statement"]
+          end
+        end
+      end
+
+      statements
+    end
+
+    private
+
+    def policy_applies_to_me(policy_properties)
+      roles = policy_properties["Roles"] || []
+      roles = [ roles ] unless roles.kind_of? Array
+      return true if roles.any? {|r| r.kind_of? Hash and r["Ref"] == logical_resource_id }
+
+      users = policy_properties["Users"] || []
+      users = [ users ] unless users.kind_of? Array
+      return true if users.any? {|r| r.kind_of? Hash and r["Ref"] == logical_resource_id }
+
+      false
+    end
+
+  end
+
   class SNSQuery
 
     # The SUBSCRIPTIONS file contains a dump of all SNS subscriptions (as dumped by "aws sns list-subscriptions")
@@ -149,49 +200,23 @@ module AwsDot
 
 end
 
-def policy_applies_to(policy_properties, actor_resource_type, actor_name)
-  roles = policy_properties["Roles"] || []
-  roles = [ roles ] unless roles.kind_of? Array
-  return true if roles.any? {|r| r.kind_of? Hash and r["Ref"] == actor_name }
-
-  users = policy_properties["Users"] || []
-  users = [ users ] unless users.kind_of? Array
-  return true if users.any? {|r| r.kind_of? Hash and r["Ref"] == actor_name }
-
-  false
-end
-
 def process_stack(stack)
   #users = stack.resources.select {|r| r["ResourceType"] == "AWS::IAM::User"}
   #roles = stack.resources.select {|r| r["ResourceType"] == "AWS::IAM::Role"}
   #puts "%4d  %4d  %s" % [ users.count, roles.count, stack.name ]
   stack.resources.entries.sort_by(&:first).each do |r|
     if r["ResourceType"].match /^AWS::IAM::(User|Role)$/
-      node_name = r["PhysicalResourceId"].gsub "-", "_"
+      actor = AwsDot::Actor.new(stack, r)
 
-      @graph.add_node node_name, {
-        label: "#{stack.name}\n#{r["LogicalResourceId"]}",
+      @graph.add_node actor.node_id, {
+        label: "#{stack.name}\n#{actor.logical_resource_id}",
         shape: "ellipse",
         color: "blue",
       }
 
-      process_actor stack, r["ResourceType"], r["LogicalResourceId"], node_name
+      process_actor actor
     end
   end
-end
-
-def policy_statements_for_actor(stack, actor_type, actor_logical_id)
-  statements = []
-
-  policies = stack.template["Resources"].entries.sort_by(&:first).each do |k, v|
-    if v["Type"] == "AWS::IAM::Policy"
-      if policy_applies_to(v["Properties"], actor_type, actor_logical_id)
-        statements.concat v["Properties"]["PolicyDocument"]["Statement"]
-      end
-    end
-  end
-
-  statements
 end
 
 def resolve_resource(stack, res)
@@ -206,10 +231,12 @@ def resolve_resource(stack, res)
   res
 end
 
-def process_policy_statement_resource(stack, actor_type, actor_logical_id, node_name, stmt, res)
-  # puts "#{stack.name} #{actor_logical_id} has some sort of access to #{res.inspect}"
-  res = resolve_resource(stack, res)
-  puts "// #{stack.name} #{actor_logical_id} has some sort of access to #{res.inspect}"
+def process_policy_statement_resource(actor, stmt, res)
+  node_name = actor.node_id
+
+  # puts "#{actor.stack.name} #{actor.logical_resource_id} has some sort of access to #{res.inspect}"
+  res = resolve_resource(actor.stack, res)
+  puts "// #{actor.stack.name} #{actor.logical_resource_id} has some sort of access to #{res.inspect}"
 
   if res.kind_of? String and res.match /^arn:aws:sqs:/ and !res.match /((DeadLetter|BadMessage|Fail)Queue|Dlq|Badmsg|BadMsg|Failed)/
     queue_name = res.split(/:/).last
@@ -278,12 +305,12 @@ def process_policy_statement_resource(stack, actor_type, actor_logical_id, node_
   end
 end
 
-def process_actor(stack, actor_type, actor_logical_id, node_name)
+def process_actor(actor)
   # Load the template of the same stack and look for AWS::IAM::Policy
   # which are applied to this role or user.
-  statements = policy_statements_for_actor(stack, actor_type, actor_logical_id)
+  statements = actor.policy_statements
 
-  # puts "Statements that apply to #{actor_logical_id}"
+  # puts "Statements that apply to #{actor.logical_resource_id}"
   # puts JSON.pretty_generate(statements)
 
   # For now we consider one statement at a time.
@@ -294,7 +321,7 @@ def process_actor(stack, actor_type, actor_logical_id, node_name)
     resources = stmt["Resource"] || []
     resources = [ resources ] unless resources.kind_of? Array
     resources.each do |res|
-      process_policy_statement_resource stack, actor_type, actor_logical_id, node_name, stmt, res
+      process_policy_statement_resource actor, stmt, res
     end
   end
 
