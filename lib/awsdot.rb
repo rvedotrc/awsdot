@@ -143,6 +143,7 @@ nodes = {}
 edges = {}
 
 AwsDot::StackCollection.new.each do |stack|
+  puts "// Processing #{stack.name}"
   if stack.guess_env == "live"
     if stack.name.match /modav|mami|sky|housekeep/i
       #users = stack.resources.select {|r| r["ResourceType"] == "AWS::IAM::User"}
@@ -201,11 +202,14 @@ AwsDot::StackCollection.new.each do |stack|
                   shape: "rect",
                 }
 
-                if stmt["Action"].include? "sqs:SendMessage"
+                if stmt["Action"].include? "sqs:SendMessage" and stmt["Action"].include? "sqs:DeleteMessage"
+                  edges[[node_name, res_node_name]] = {
+                    dir: "both",
+                  }
+                elsif stmt["Action"].include? "sqs:SendMessage"
                   edges[[node_name, res_node_name]] = {
                   }
-                end
-                if stmt["Action"].include? "sqs:DeleteMessage"
+                elsif stmt["Action"].include? "sqs:DeleteMessage"
                   edges[[res_node_name, node_name]] = {
                   }
                 end
