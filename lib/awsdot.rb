@@ -262,6 +262,20 @@ def process_policy_statement_resource(stack, actor_type, actor_logical_id, node_
     @graph.add_edge node_name, res_node_name, {
     }
   end
+
+  if res.kind_of? String and res.match /^arn:aws:dynamodb:/
+    table_name = res.split('/').last
+    res_node_name = res.gsub /\W/, "_"
+
+    @graph.add_node res_node_name, {
+      label: table_name.sub(/-[A-Z0-9]{6,20}$/, "").gsub("-", "\n"),
+      shape: "rect",
+      fontcolor: "brown",
+    }
+
+    @graph.add_edge node_name, res_node_name, {
+    }
+  end
 end
 
 def process_actor(stack, actor_type, actor_logical_id, node_name)
